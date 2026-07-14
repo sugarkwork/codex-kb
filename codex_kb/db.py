@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -56,10 +57,26 @@ def discover_git(cwd: str | Path | None) -> dict[str, str | None]:
         return value if completed.returncode == 0 and value else None
 
     return {
-        "repo_root": git("rev-parse", "--show-toplevel"),
+        "repo_root": normalize_repo_root(git("rev-parse", "--show-toplevel")),
         "branch": git("branch", "--show-current"),
         "git_head": git("rev-parse", "HEAD"),
     }
+
+
+def normalize_repo_root(repo_root: str | None) -> str | None:
+    """Use one repository identity across PowerShell, Git, and SQLite.
+
+    Git commonly reports `F:/repo` on Windows while users or Hooks may supply
+    `F:\\repo`.  Without normalization, a repository-scoped search silently
+    misses records that came from the other spelling.
+    """
+    if not repo_root:
+        return None
+    try:
+        normalized = Path(repo_root).expanduser().resolve(strict=False).as_posix()
+    except OSError:
+        normalized = str(repo_root).replace("\\", "/")
+    return normalized.casefold() if os.name == "nt" else normalized
 
 
 @dataclass(frozen=True)
@@ -204,6 +221,7 @@ class KnowledgeBase:
                 END;
                 """
             )
+            self._normalize_existing_repo_roots(connection)
 
     def start_session(self, event: dict[str, Any]) -> dict[str, Any]:
         self.initialize()
@@ -288,7 +306,7 @@ class KnowledgeBase:
                     item.rationale.strip(),
                     item.outcome.strip(),
                     json.dumps(tags, ensure_ascii=False),
-                    item.repo_root,
+                    normalize_repo_root(item.repo_root),
                     item.session_id,
                     item.source_url,
                     item.observed_at,
@@ -341,6 +359,7 @@ class KnowledgeBase:
             raise ValueError("query is required")
         if limit < 1 or limit > 50:
             raise ValueError("limit must be between 1 and 50")
+        repo_root = normalize_repo_root(repo_root)
 
         tokens = _search_tokens(cleaned)
         fts_query = " OR ".join(f'"{token.replace(chr(34), "")}"' for token in tokens)
@@ -424,6 +443,7 @@ class KnowledgeBase:
 
     def recent_for_repo(self, repo_root: str | None, limit: int = 3) -> list[dict[str, Any]]:
         self.initialize()
+        repo_root = normalize_repo_root(repo_root)
         if not repo_root:
             return []
         with self.connection() as connection:
@@ -459,6 +479,20 @@ class KnowledgeBase:
         if score is not None:
             result["score"] = round(score, 4)
         return result
+
+    @staticmethod
+    def _normalize_existing_repo_roots(connection: sqlite3.Connection) -> None:
+        """Migrate records written before path normalization was introduced."""
+        for table in ("sessions", "knowledge"):
+            rows = connection.execute(
+                f"SELECT rowid AS internal_rowid, repo_root FROM {table} WHERE repo_root IS NOT NULL"
+            ).fetchall()
+            for row in rows:
+                normalized = normalize_repo_root(row["repo_root"])
+                if normalized and normalized != row["repo_root"]:
+                    connection.execute(
+                        f"UPDATE {table} SET repo_root = ? WHERE rowid = ?", (normalized, row["internal_rowid"])
+                    )
 
 
 def knowledge_from_mapping(data: dict[str, Any]) -> KnowledgeInput:
@@ -538,7 +572,15 @@ def _clean_tag(tag: str) -> str:
 
 
 def _search_tokens(query: str) -> list[str]:
-    tokens = re.findall(r"[\w\u3040-\u30ff\u3400-\u9fff-]+", query, flags=re.UNICODE)
+    raw_tokens = re.findall(r"[\w\u3040-\u30ff\u3400-\u9fff-]+", query, flags=re.UNICODE)
+    tokens: list[str] = []
+    for token in raw_tokens:
+        tokens.append(token)
+        # SQLite's stock tokenizer does not split Japanese. A full natural
+        # language query such as "別プロジェクトの過去実装を検索したい" should
+        # still recall records that mention "別プロジェクト" or "過去実装".
+        if re.search(r"[\u3040-\u30ff\u3400-\u9fff]", token):
+            tokens.extend(part for part in re.split(r"[のをにはがとでやもへ]+", token) if len(part) >= 2)
     return list(dict.fromkeys(token for token in tokens if token)) or [query]
 
 

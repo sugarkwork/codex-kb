@@ -40,6 +40,9 @@ class KnowledgeBaseTests(unittest.TestCase):
         symbol_results = self.kb.search("refreshToken")
         self.assertEqual([item["id"] for item in symbol_results], [record_id])
 
+        intent_results = self.kb.search("ログイン障害を減らしたい")
+        self.assertEqual([item["id"] for item in intent_results], [record_id])
+
     def test_session_lifecycle_keeps_stable_metadata(self) -> None:
         started = self.kb.start_session(
             {"session_id": "session-123", "cwd": self.temp_dir.name, "model": "gpt-test", "source": "startup"}
@@ -49,6 +52,23 @@ class KnowledgeBaseTests(unittest.TestCase):
         self.assertEqual(started["session_id"], "session-123")
         self.assertEqual(stopped["session_id"], "session-123")
         self.assertEqual(self.kb.status()["sessions"], 1)
+
+    def test_repository_filter_normalizes_windows_git_path_spellings(self) -> None:
+        self.kb.record(
+            KnowledgeInput(
+                kind="note",
+                title="リポジトリパスの正規化",
+                summary="PowerShell と Git の区切り文字の違いを吸収する",
+                repo_root=r"F:\\workspace\\example",
+            )
+        )
+        # Simulate the v0.1.0 database entry written before normalization.
+        with self.kb.connection() as connection:
+            connection.execute("UPDATE knowledge SET repo_root = ?", (r"F:\\workspace\\example",))
+
+        results = self.kb.search("正規化", repo_root="F:/workspace/example")
+
+        self.assertEqual(len(results), 1)
 
     def test_mcp_tools_search_and_record(self) -> None:
         response = handle_request(
