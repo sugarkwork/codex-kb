@@ -1,0 +1,12 @@
+## Cross-project knowledge
+
+Before researching, designing, or implementing a non-trivial change, call the
+`search_knowledge` MCP tool with the user's goal, relevant error text, and/or
+feature name. Treat retrieved records as leads: inspect the cited repository,
+path, and Git revision before relying on them.
+
+After completing work that is likely useful in another project, call
+`record_knowledge`. Always include `purpose`, `background`, and `rationale`;
+include only non-secret paths and short excerpts. Do not record credentials,
+private keys, `.env` values, or personal data.
+

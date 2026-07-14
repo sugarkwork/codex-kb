@@ -1,0 +1,31 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command_windows": "codex-kb session start",
+            "command": "codex-kb session start",
+            "timeout": 10,
+            "statusMessage": "Recording Codex session metadata"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command_windows": "codex-kb session stop",
+            "command": "codex-kb session stop",
+            "timeout": 10,
+            "statusMessage": "Closing Codex session metadata"
+          }
+        ]
+      }
+    ]
+  }
+}
