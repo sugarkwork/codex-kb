@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from codex_kb.db import Artifact, KnowledgeBase, KnowledgeInput
+from codex_kb.cli import _migration_payload
+from codex_kb.db import Artifact, KnowledgeBase, KnowledgeInput, discover_git
 from codex_kb.mcp import call_tool, handle_request
 
 
@@ -69,6 +72,75 @@ class KnowledgeBaseTests(unittest.TestCase):
         results = self.kb.search("正規化", repo_root="F:/workspace/example")
 
         self.assertEqual(len(results), 1)
+
+    def test_discover_git_requests_utf8_output(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["git"],
+            returncode=0,
+            stdout="F:/workspace/日本語\n",
+            stderr="",
+        )
+        with patch("codex_kb.db.subprocess.run", return_value=completed) as run:
+            metadata = discover_git("F:/workspace/日本語")
+
+        self.assertIsNotNone(metadata["repo_root"])
+        self.assertEqual(run.call_count, 3)
+        self.assertTrue(all(call.kwargs["encoding"] == "utf-8" for call in run.call_args_list))
+        self.assertTrue(all(call.kwargs["errors"] == "strict" for call in run.call_args_list))
+
+    def test_discover_git_treats_decode_failure_as_missing_metadata(self) -> None:
+        decode_error = UnicodeDecodeError("utf-8", b"\x81", 0, 1, "invalid start byte")
+        with patch("codex_kb.db.subprocess.run", side_effect=decode_error):
+            metadata = discover_git("F:/workspace")
+
+        self.assertEqual(metadata, {"repo_root": None, "branch": None, "git_head": None})
+
+    def test_update_replaces_knowledge_fields_and_artifacts(self) -> None:
+        record_id = self.kb.record(
+            KnowledgeInput(
+                kind="implementation",
+                title="初期タイトル",
+                summary="初期要約",
+                purpose="初期目的",
+                artifacts=(Artifact(path="src/old.py", symbol="old"),),
+            )
+        )
+
+        self.kb.update(
+            record_id,
+            KnowledgeInput(
+                kind="decision",
+                title="更新後タイトル",
+                summary="更新後要約",
+                purpose="更新後目的",
+                background="更新理由",
+                rationale="採用理由",
+                outcome="検証済み",
+                tags=("updated",),
+                source_url="https://example.test/decision",
+                artifacts=(Artifact(path="src/new.py", symbol="new"),),
+            ),
+        )
+
+        updated = self.kb.get(record_id)
+        self.assertEqual(updated["kind"], "decision")
+        self.assertEqual(updated["title"], "更新後タイトル")
+        self.assertEqual(updated["tags"], ["updated"])
+        self.assertEqual(updated["artifacts"][0]["path"], "src/new.py")
+
+    def test_all_knowledge_and_migration_payload_are_complete_and_stable(self) -> None:
+        first = self.kb.record(
+            KnowledgeInput(kind="note", title="最初", summary="一件目", tags=("one",), artifacts=(Artifact(path="first.py"),))
+        )
+        second = self.kb.record(KnowledgeInput(kind="decision", title="次", summary="二件目"))
+
+        records = self.kb.all_knowledge()
+
+        self.assertEqual([record["id"] for record in records], [first, second])
+        payload = _migration_payload(records[0])
+        self.assertEqual(payload["title"], "最初")
+        self.assertIn(f"local-id:{first}", payload["tags"])
+        self.assertEqual(payload["artifacts"][0]["path"], "first.py")
 
     def test_mcp_tools_search_and_record(self) -> None:
         response = handle_request(

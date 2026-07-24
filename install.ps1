@@ -20,6 +20,14 @@ $installRoot = Join-Path $HOME '.codex-kb'
 $app = Join-Path $installRoot 'app'
 $bin = Join-Path $installRoot 'bin'
 $sourceRoot = $PSScriptRoot
+$remoteRequirements = Join-Path $sourceRoot 'requirements-remote.txt'
+
+if ($isPyLauncher) {
+    & $python -3 -m pip install --user -r $remoteRequirements
+} else {
+    & $python -m pip install --user -r $remoteRequirements
+}
+if ($LASTEXITCODE -ne 0) { throw 'Could not install the client-side E2E encryption dependency.' }
 
 New-Item -ItemType Directory -Force -Path $app, $bin | Out-Null
 Copy-Item -Path (Join-Path $sourceRoot 'codex-kb.py') -Destination (Join-Path $app 'codex-kb.py') -Force

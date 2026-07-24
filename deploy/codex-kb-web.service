@@ -1,0 +1,28 @@
+[Unit]
+Description=codex-kb authenticated shared web service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=codexkb
+Group=codexkb
+WorkingDirectory=/opt/codex-kb
+EnvironmentFile=/etc/codex-kb-web.env
+ExecStart=/opt/codex-kb/.venv/bin/uvicorn codex_kb.webapp:app --host 127.0.0.1 --port 8100 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/codex-kb-server
+
+[Install]
+WantedBy=multi-user.target

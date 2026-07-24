@@ -47,11 +47,13 @@ def discover_git(cwd: str | Path | None) -> dict[str, str | None]:
             completed = subprocess.run(
                 ["git", "-C", str(path), *args],
                 text=True,
+                encoding="utf-8",
+                errors="strict",
                 capture_output=True,
                 check=False,
                 timeout=3,
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError):
             return None
         value = completed.stdout.strip()
         return value if completed.returncode == 0 and value else None
@@ -281,11 +283,7 @@ class KnowledgeBase:
 
     def record(self, item: KnowledgeInput) -> int:
         self.initialize()
-        if item.kind not in VALID_KINDS:
-            allowed = ", ".join(sorted(VALID_KINDS))
-            raise ValueError(f"kind must be one of: {allowed}")
-        if not item.title.strip() or not item.summary.strip():
-            raise ValueError("title and summary are required")
+        self._validate_knowledge(item)
         now = utc_now()
         tags = tuple(_clean_tag(tag) for tag in item.tags if _clean_tag(tag))
         with self.connection() as connection:
@@ -338,6 +336,81 @@ class KnowledgeBase:
                 )
         return knowledge_id
 
+    def update(self, knowledge_id: int, item: KnowledgeInput) -> None:
+        """Replace one record's editable fields and its artifact list.
+
+        Updates intentionally take a complete record. This avoids silently
+        erasing a purpose, rationale, or source path when an agent has only
+        partial context; callers should retrieve the record first when needed.
+        """
+        self.initialize()
+        self._validate_knowledge(item)
+        now = utc_now()
+        tags = tuple(_clean_tag(tag) for tag in item.tags if _clean_tag(tag))
+        with self.connection() as connection:
+            exists = connection.execute("SELECT 1 FROM knowledge WHERE id = ?", (knowledge_id,)).fetchone()
+            if exists is None:
+                raise ValueError(f"knowledge record {knowledge_id} was not found")
+            connection.execute(
+                """
+                UPDATE knowledge SET
+                    kind=?, title=?, summary=?, purpose=?, background=?, rationale=?, outcome=?,
+                    tags_json=?, repo_root=?, session_id=?, source_url=?, observed_at=?,
+                    effective_from=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    item.kind,
+                    item.title.strip(),
+                    item.summary.strip(),
+                    item.purpose.strip(),
+                    item.background.strip(),
+                    item.rationale.strip(),
+                    item.outcome.strip(),
+                    json.dumps(tags, ensure_ascii=False),
+                    normalize_repo_root(item.repo_root),
+                    item.session_id,
+                    item.source_url,
+                    item.observed_at,
+                    item.effective_from,
+                    now,
+                    knowledge_id,
+                ),
+            )
+            connection.execute("DELETE FROM artifacts WHERE knowledge_id = ?", (knowledge_id,))
+            self._insert_artifacts(connection, knowledge_id, item.artifacts)
+
+    @staticmethod
+    def _validate_knowledge(item: KnowledgeInput) -> None:
+        if item.kind not in VALID_KINDS:
+            allowed = ", ".join(sorted(VALID_KINDS))
+            raise ValueError(f"kind must be one of: {allowed}")
+        if not item.title.strip() or not item.summary.strip():
+            raise ValueError("title and summary are required")
+
+    @staticmethod
+    def _insert_artifacts(connection: sqlite3.Connection, knowledge_id: int, artifacts: Iterable[Artifact]) -> None:
+        for artifact in artifacts:
+            excerpt = artifact.excerpt.strip() if artifact.excerpt else None
+            excerpt_hash = hashlib.sha256(excerpt.encode("utf-8")).hexdigest() if excerpt else None
+            connection.execute(
+                """
+                INSERT INTO artifacts (
+                    knowledge_id, path, symbol, line_start, line_end, git_commit, excerpt, excerpt_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    knowledge_id,
+                    artifact.path,
+                    artifact.symbol,
+                    artifact.line_start,
+                    artifact.line_end,
+                    artifact.git_commit,
+                    excerpt,
+                    excerpt_hash,
+                ),
+            )
+
     def get(self, knowledge_id: int) -> dict[str, Any] | None:
         self.initialize()
         with self.connection() as connection:
@@ -345,6 +418,13 @@ class KnowledgeBase:
             if row is None:
                 return None
             return self._knowledge_dict(connection, row)
+
+    def all_knowledge(self) -> list[dict[str, Any]]:
+        """Return complete records in stable local-ID order for export/migration."""
+        self.initialize()
+        with self.connection() as connection:
+            rows = connection.execute("SELECT * FROM knowledge ORDER BY id").fetchall()
+            return [self._knowledge_dict(connection, row) for row in rows]
 
     def search(self, query: str, *, repo_root: str | None = None, limit: int = 5) -> list[dict[str, Any]]:
         """Search explicit fields first, then supplement FTS with substring matches.

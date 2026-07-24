@@ -62,6 +62,27 @@ Use `--stdin-json` when a script or an agent is producing the record:
 `observed_at` means when a fact was confirmed; `effective_from` means when a
 decision or behavior applies. Keeping both prevents an ambiguous single date.
 
+## Update a record
+
+Use `show` first, then replace the record with its current complete state.
+`update` intentionally replaces the artifact list as well as the descriptive
+fields, so it cannot silently preserve stale paths or rationale.
+
+```powershell
+codex-kb show 12 --json
+
+codex-kb update 12 `
+  --kind implementation `
+  --title "OAuth refresh token を単一フライト化" `
+  --summary "期限切れ時の重複更新を抑える" `
+  --purpose "ユーザーのリクエスト失敗を減らす" `
+  --background "複数タブが同時に更新していた" `
+  --rationale "共有 Promise で競合を防ぐ" `
+  --outcome "並行更新を1回に抑えた" `
+  --tag auth --tag oauth `
+  --path src/auth/refresh.ts --symbol refreshToken
+```
+
 ## Search
 
 ```powershell
@@ -117,3 +138,67 @@ through storage you trust.
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+## Shared web service for multiple PCs
+
+`https://kb.sugar-knight.com` is an optional authenticated service for
+multiple PCs. It is separate from the local database: do **not** copy or
+cloud-sync `codex-kb.sqlite3` or its WAL file.
+
+Registration does not need an invitation code. The command prompts for an
+account password and a separate encryption passphrase, then saves only this
+PC's bearer token and E2E key material to
+`~/.codex-kb/remote-credentials.json`. The password and passphrase are never
+saved. On Windows the credential file is ACL-restricted to the current user;
+on Unix it is mode `0600`.
+
+```powershell
+# First PC: creates the account and the default profile credential file.
+codex-kb remote register --username alice --display-name 'Alice'
+
+# Later commands automatically use the saved credential file.
+codex-kb remote whoami
+codex-kb remote record --kind note --title 'example' --summary 'remote note'
+codex-kb remote list --query 'VPS file transfer'
+codex-kb remote file upload .\plan.pdf
+
+# Copy existing local records.  It adds an encrypted origin marker, so a
+# failed import can safely be rerun without duplicating completed records.
+codex-kb remote import-local --dry-run
+codex-kb remote import-local
+
+# Second PC: prompts for the same account password and encryption passphrase,
+# then creates a distinct bearer token for that PC.
+codex-kb remote login --username alice
+```
+
+To keep credentials in a repository or project profile instead, explicitly
+choose the path during registration/login. A present
+`.codex-kb-credentials.json` in the current directory is selected
+automatically; it is git-ignored by this repository.
+
+```powershell
+codex-kb remote login --username alice --credentials .\.codex-kb-credentials.json
+```
+
+Knowledge records are encrypted on the client with AES-256-GCM. The server
+only sees opaque ciphertext, so remote keyword search is performed locally
+after the authenticated client downloads and decrypts the user's records.
+Files are encrypted before upload, including their filename and checksum.
+Sharing a file encrypts its random file key for the selected user's X25519
+public key, so only that user's authenticated clients can decrypt it.
+
+```powershell
+codex-kb remote file list
+codex-kb remote file download <file-id> --output .\plan.pdf
+codex-kb remote recipient-key bob        # compare this value with Bob out of band
+codex-kb remote file share <file-id> bob --recipient-fingerprint <fingerprint>
+codex-kb remote file revoke <file-id> bob
+```
+
+For an E2E threat model, keep the encryption passphrase and at least one
+credential file recoverable outside the VPS. If all copies of both are lost,
+the data cannot be recovered. A recipient public-key fingerprint should be
+verified out of band before sharing highly sensitive files; use
+`--recipient-fingerprint` to enforce an expected fingerprint. `logout`
+revokes the current PC's token and removes its credential file.

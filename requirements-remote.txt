@@ -1,0 +1,2 @@
+# Client-side E2E encryption for codex-kb remote commands.
+cryptography>=43,<47

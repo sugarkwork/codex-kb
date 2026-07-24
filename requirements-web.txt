@@ -1,0 +1,6 @@
+# Optional dependencies for the authenticated shared web service.
+# The local CLI/MCP remains dependency-free.  The remote CLI additionally
+# installs requirements-remote.txt for client-side E2E encryption.
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+python-multipart>=0.0.20,<1
