@@ -101,10 +101,14 @@ def build_parser() -> argparse.ArgumentParser:
     remote_register.add_argument("--display-name", help="Shown to selected file recipients; defaults to the username.")
     remote_register.add_argument("--url", dest="url", default=argparse.SUPPRESS, help="Override the service URL for this registration.")
     remote_register.add_argument("--credentials", dest="credentials", type=Path, default=argparse.SUPPRESS, help="Save the new PC credential file at this path.")
+    remote_register.add_argument("--password-env", metavar="NAME", help="Read the account password from environment variable NAME; requires --passphrase-env.")
+    remote_register.add_argument("--passphrase-env", metavar="NAME", help="Read the encryption passphrase from environment variable NAME; requires --password-env.")
     remote_login = remote_subparsers.add_parser("login", help="Sign in on this PC and save a new bearer token plus local E2E keys.")
     remote_login.add_argument("--username", required=True)
     remote_login.add_argument("--url", dest="url", default=argparse.SUPPRESS, help="Override the service URL for this login.")
     remote_login.add_argument("--credentials", dest="credentials", type=Path, default=argparse.SUPPRESS, help="Save this PC credential file at this path.")
+    remote_login.add_argument("--password-env", metavar="NAME", help="Read the account password from environment variable NAME; requires --passphrase-env.")
+    remote_login.add_argument("--passphrase-env", metavar="NAME", help="Read the encryption passphrase from environment variable NAME; requires --password-env.")
     remote_subparsers.add_parser("logout", help="Revoke this PC's bearer token and remove its saved credential file.")
     remote_subparsers.add_parser("whoami", help="Verify remote credentials and show the signed-in user.")
     remote_key = remote_subparsers.add_parser("recipient-key", help="Show a registered user's X25519 public-key fingerprint for out-of-band verification.")
@@ -282,15 +286,13 @@ def _session(kb: KnowledgeBase, args: argparse.Namespace) -> int:
 def _remote(args: argparse.Namespace) -> int:
     credential_path = resolve_credentials_path(args.credentials)
     if args.remote_command == "register":
-        password = _prompt_new_secret("Account password")
-        passphrase = _prompt_new_secret("Encryption passphrase")
+        password, passphrase = _registration_secrets(args)
         credentials = create_remote_account(_remote_url(args, {}), args.username, args.display_name or args.username, password, passphrase)
         save_credentials(credential_path, credentials)
         print(f"Registered {credentials['username']} and saved this PC's bearer token and E2E keys to {credential_path}.")
         return 0
     if args.remote_command == "login":
-        password = _prompt_secret("Account password")
-        passphrase = _prompt_secret("Encryption passphrase")
+        password, passphrase = _login_secrets(args)
         credentials = login_remote_account(_remote_url(args, {}), args.username, password, passphrase)
         save_credentials(credential_path, credentials)
         print(f"Signed in as {credentials['username']} and saved this PC's bearer token and E2E keys to {credential_path}.")
@@ -420,6 +422,31 @@ def _prompt_new_secret(label: str) -> str:
     confirm = getpass.getpass(f"Confirm {label.lower()}: ")
     if value != confirm:
         raise ValueError(f"{label.lower()} entries do not match")
+    return value
+
+
+def _registration_secrets(args: argparse.Namespace) -> tuple[str, str]:
+    if not args.password_env and not args.passphrase_env:
+        return _prompt_new_secret("Account password"), _prompt_new_secret("Encryption passphrase")
+    return _environment_secrets(args)
+
+
+def _login_secrets(args: argparse.Namespace) -> tuple[str, str]:
+    if not args.password_env and not args.passphrase_env:
+        return _prompt_secret("Account password"), _prompt_secret("Encryption passphrase")
+    return _environment_secrets(args)
+
+
+def _environment_secrets(args: argparse.Namespace) -> tuple[str, str]:
+    if not args.password_env or not args.passphrase_env:
+        raise ValueError("--password-env and --passphrase-env must be supplied together")
+    return _secret_from_environment(args.password_env, "account password"), _secret_from_environment(args.passphrase_env, "encryption passphrase")
+
+
+def _secret_from_environment(name: str, label: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise ValueError(f"environment variable {name!r} does not contain an {label}")
     return value
 
 

@@ -181,6 +181,12 @@ automatically; it is git-ignored by this repository.
 codex-kb remote login --username alice --credentials .\.codex-kb-credentials.json
 ```
 
+For a complete install-and-handoff procedure for another PC or another Codex
+instance, including the safe handling of the two required secrets, see
+[the remote-PC setup manual](docs/REMOTE_SETUP.md). Do not copy a bearer token
+or `remote-credentials.json` between PCs: each PC logs in and receives its own
+revocable token.
+
 Knowledge records are encrypted on the client with AES-256-GCM. The server
 only sees opaque ciphertext, so remote keyword search is performed locally
 after the authenticated client downloads and decrypts the user's records.

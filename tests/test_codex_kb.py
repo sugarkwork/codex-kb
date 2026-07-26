@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from codex_kb.cli import _migration_payload
+from codex_kb.cli import _environment_secrets, _migration_payload, build_parser
 from codex_kb.db import Artifact, KnowledgeBase, KnowledgeInput, discover_git
 from codex_kb.mcp import call_tool, handle_request
 
@@ -141,6 +141,30 @@ class KnowledgeBaseTests(unittest.TestCase):
         self.assertEqual(payload["title"], "最初")
         self.assertIn(f"local-id:{first}", payload["tags"])
         self.assertEqual(payload["artifacts"][0]["path"], "first.py")
+
+    def test_remote_login_can_read_both_secrets_from_explicit_environment_names(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "remote",
+                "login",
+                "--username",
+                "alice",
+                "--password-env",
+                "TEST_ACCOUNT_PASSWORD",
+                "--passphrase-env",
+                "TEST_ENCRYPTION_PASSPHRASE",
+            ]
+        )
+        with patch.dict(
+            "os.environ",
+            {"TEST_ACCOUNT_PASSWORD": "test password", "TEST_ENCRYPTION_PASSPHRASE": "test passphrase"},
+            clear=False,
+        ):
+            self.assertEqual(_environment_secrets(args), ("test password", "test passphrase"))
+
+        args.passphrase_env = None
+        with self.assertRaisesRegex(ValueError, "must be supplied together"):
+            _environment_secrets(args)
 
     def test_mcp_tools_search_and_record(self) -> None:
         response = handle_request(
