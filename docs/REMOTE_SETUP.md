@@ -21,11 +21,15 @@ PowerShellで実行します。
 
 ```powershell
 $source = Join-Path $HOME 'source\codex-kb'
-git clone --depth 1 https://github.com/sugarkwork/codex-kb.git $source
+# この手順の更新が main へマージされるまでは、手順と同じブランチを明示する。
+$branch = 'agent/remote-setup-manual'
+git clone --depth 1 --branch $branch https://github.com/sugarkwork/codex-kb.git $source
 Set-Location $source
 Set-ExecutionPolicy -Scope Process Bypass
 .\install.ps1
 ```
+
+PRが main へマージ済みなら、`--branch $branch` は省略して構いません。
 
 Gitを使えない場合は、GitHubの **Code → Download ZIP** で取得・展開してから、
 同じ `install.ps1` を実行します。
