@@ -185,7 +185,8 @@ For a complete install-and-handoff procedure for another PC or another Codex
 instance, including the safe handling of the two required secrets, see
 [the remote-PC setup manual](docs/REMOTE_SETUP.md). Do not copy a bearer token
 or `remote-credentials.json` between PCs: each PC logs in and receives its own
-revocable token.
+revocable token. The manual also includes `scripts/setup-remote.ps1`, which a
+trusted Codex session can use for clone/install/login/verification.
 
 Knowledge records are encrypted on the client with AES-256-GCM. The server
 only sees opaque ciphertext, so remote keyword search is performed locally

@@ -34,6 +34,32 @@ PRが main へマージ済みなら、`--branch $branch` は省略して構い�
 Gitを使えない場合は、GitHubの **Code → Download ZIP** で取得・展開してから、
 同じ `install.ps1` を実行します。
 
+## Codexが実行する一括セットアップ
+
+別PCのCodexには、この手順URL、アカウント名、アカウントパスワード、暗号化
+パスフレーズを渡します。Codexはまずこのブランチをcloneし、次のスクリプトを
+実行します。スクリプトは導入、端末固有ログイン、`whoami`／`list` 検証まで行います。
+
+```powershell
+$source = Join-Path $HOME 'source\codex-kb'
+$branch = 'agent/remote-setup-manual'
+git clone --depth 1 --branch $branch https://github.com/sugarkwork/codex-kb.git $source
+
+# 2つの値は、信頼できるCodex実行セッションでだけ設定する。
+$env:CODEX_KB_ACCOUNT_PASSWORD = '<secret supplied in the trusted session>'
+$env:CODEX_KB_ENCRYPTION_PASSPHRASE = '<secret supplied in the trusted session>'
+
+& "$source\scripts\setup-remote.ps1" `
+  -AccountUsername <account-name> `
+  -InstallDirectory $source `
+  -UseExistingCheckout `
+  -Branch $branch
+```
+
+スクリプトは成功・失敗にかかわらず、上記2つの環境変数を実行中のPowerShell
+プロセスから削除します。Bearerトークン、`remote-credentials.json`、秘密を含む
+PowerShellスクリプトを別PCへ渡す必要はありません。
+
 ## 推奨: 本人が対話入力してログイン
 
 ```powershell
