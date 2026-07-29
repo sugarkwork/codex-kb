@@ -2,9 +2,9 @@
 
 This deploys the authenticated opaque-storage service, not the local
 `~/.codex-kb` database. Each registered account gets an isolated remote
-knowledge area.  The service stores AES-GCM ciphertext, encrypted metadata,
-public X25519 keys, password verifiers, and hashes of bearer tokens; it never
-receives a usable content-decryption key.
+knowledge and secret area. The service stores AES-GCM ciphertext, encrypted
+metadata, public X25519 keys, password verifiers, and hashes of bearer tokens;
+it never receives a usable content-decryption key or an API-key value.
 
 Run the following as `root` on the Japan VPS after copying this repository to
 `/opt/codex-kb`:

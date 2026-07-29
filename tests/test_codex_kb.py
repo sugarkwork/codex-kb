@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from codex_kb.cli import _migration_payload
+from codex_kb.cli import _environment_secrets, _migration_payload, build_parser
+from codex_kb.credentials import load_credentials, save_credentials
 from codex_kb.db import Artifact, KnowledgeBase, KnowledgeInput, discover_git
+from codex_kb import e2e
 from codex_kb.mcp import call_tool, handle_request
+from codex_kb.remote import EncryptedKnowledgeClient
 
 
 class KnowledgeBaseTests(unittest.TestCase):
@@ -141,6 +145,100 @@ class KnowledgeBaseTests(unittest.TestCase):
         self.assertEqual(payload["title"], "最初")
         self.assertIn(f"local-id:{first}", payload["tags"])
         self.assertEqual(payload["artifacts"][0]["path"], "first.py")
+
+    def test_remote_login_can_read_both_secrets_from_explicit_environment_names(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "remote",
+                "login",
+                "--username",
+                "alice",
+                "--password-env",
+                "TEST_ACCOUNT_PASSWORD",
+                "--passphrase-env",
+                "TEST_ENCRYPTION_PASSPHRASE",
+            ]
+        )
+        with patch.dict(
+            "os.environ",
+            {"TEST_ACCOUNT_PASSWORD": "test password", "TEST_ENCRYPTION_PASSPHRASE": "test passphrase"},
+            clear=False,
+        ):
+            self.assertEqual(_environment_secrets(args), ("test password", "test passphrase"))
+
+        args.passphrase_env = None
+        with self.assertRaisesRegex(ValueError, "must be supplied together"):
+            _environment_secrets(args)
+
+    def test_remote_secret_parser_requires_non_argument_secret_sources(self) -> None:
+        parsed = build_parser().parse_args(["remote", "secret", "set", "OPENAI_API_KEY", "--value-env", "TEMP_API_KEY"])
+        self.assertEqual(parsed.remote_secret_command, "set")
+        self.assertEqual(parsed.name, "OPENAI_API_KEY")
+        self.assertEqual(parsed.value_env, "TEMP_API_KEY")
+        run = build_parser().parse_args(["remote", "secret", "run", "OPENAI_API_KEY", "--", "python", "-V"])
+        self.assertEqual(run.child_command, ["python", "-V"])
+
+    def test_credentials_round_trip_without_plaintext_on_windows(self) -> None:
+        path = Path(self.temp_dir.name) / "remote-credentials.json"
+        credentials = {
+            "server_url": "https://kb.example.test",
+            "token": "unit-test-token-that-must-not-be-plain",
+            "vault_key": "vault-key",
+            "private_key": "private-key",
+            "public_key": "public-key",
+            "username": "alice",
+        }
+        save_credentials(path, credentials)
+        self.assertEqual(load_credentials(path), credentials)
+        if os.name == "nt":
+            self.assertNotIn(credentials["token"].encode("utf-8"), path.read_bytes())
+
+    def test_remote_secret_values_are_encrypted_and_not_returned_by_list(self) -> None:
+        class FakeApi:
+            def __init__(self) -> None:
+                self.rows: dict[str, dict[str, str]] = {}
+
+            def get(self, path: str) -> list[dict[str, str]]:
+                self.assert_path(path)
+                return list(self.rows.values())
+
+            def post(self, path: str, payload: dict[str, str]) -> dict[str, str]:
+                self.assert_path(path)
+                secret_id = payload["id"]
+                self.rows[secret_id] = {"id": secret_id, "ciphertext": payload["ciphertext"], "created_at": "now", "updated_at": "now"}
+                return {"id": secret_id, "created_at": "now", "updated_at": "now"}
+
+            def put(self, path: str, payload: dict[str, str]) -> dict[str, str]:
+                secret_id = path.rsplit("/", 1)[-1]
+                self.rows[secret_id]["ciphertext"] = payload["ciphertext"]
+                self.rows[secret_id]["updated_at"] = "later"
+                return {"id": secret_id, "updated_at": "later"}
+
+            def delete(self, path: str) -> None:
+                secret_id = path.rsplit("/", 1)[-1]
+                del self.rows[secret_id]
+
+            @staticmethod
+            def assert_path(path: str) -> None:
+                if path != "/api/secrets":
+                    raise AssertionError(path)
+
+        vault_key = b"v" * 32
+        private_key = b"p" * 32
+        api = FakeApi()
+        remote = EncryptedKnowledgeClient(
+            api,
+            {"vault_key": e2e.b64encode(vault_key), "private_key": e2e.b64encode(private_key), "public_key": e2e.b64encode(b"q" * 32)},
+        )
+
+        stored = remote.set_secret("OPENAI_API_KEY", "unit-test-api-key-value")
+        self.assertEqual(stored["name"], "OPENAI_API_KEY")
+        self.assertNotIn("unit-test-api-key-value", next(iter(api.rows.values()))["ciphertext"])
+        self.assertEqual(remote.list_secrets()[0]["name"], "OPENAI_API_KEY")
+        self.assertNotIn("value", remote.list_secrets()[0])
+        self.assertEqual(remote.secret_value("OPENAI_API_KEY"), "unit-test-api-key-value")
+        remote.delete_secret("OPENAI_API_KEY")
+        self.assertEqual(api.rows, {})
 
     def test_mcp_tools_search_and_record(self) -> None:
         response = handle_request(

@@ -70,6 +70,15 @@ class EncryptedKnowledgeRequest(BaseModel):
     ciphertext: str = Field(min_length=1, max_length=1_000_000)
 
 
+class EncryptedSecretRequest(BaseModel):
+    id: str = Field(min_length=36, max_length=36)
+    ciphertext: str = Field(min_length=1, max_length=100_000)
+
+
+class EncryptedSecretUpdateRequest(BaseModel):
+    ciphertext: str = Field(min_length=1, max_length=100_000)
+
+
 class EncryptedFileRequest(BaseModel):
     id: str = Field(min_length=36, max_length=36)
     metadata_ciphertext: str = Field(min_length=1, max_length=32_000)
@@ -157,6 +166,14 @@ class Store:
                     updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_knowledge_owner_updated ON knowledge(owner_id, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS secrets (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    ciphertext TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_secrets_owner_updated ON secrets(owner_id, updated_at DESC);
                 CREATE TABLE IF NOT EXISTS files (
                     id TEXT PRIMARY KEY,
                     owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -267,6 +284,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         row = connection.execute("SELECT * FROM knowledge WHERE id=? AND owner_id=?", (knowledge_id, user_id)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Knowledge item was not found.")
+        return row
+
+    def owned_secret(connection: sqlite3.Connection, secret_id: str, user_id: str) -> sqlite3.Row:
+        row = connection.execute("SELECT * FROM secrets WHERE id=? AND owner_id=?", (secret_id, user_id)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Secret was not found.")
         return row
 
     def accessible_file(connection: sqlite3.Connection, file_id: str, user_id: str) -> sqlite3.Row:
@@ -381,6 +404,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with store.connection() as connection:
             owned_knowledge(connection, knowledge_id, context.user_id)
             connection.execute("DELETE FROM knowledge WHERE id=? AND owner_id=?", (knowledge_id, context.user_id))
+        return Response(status_code=204)
+
+    @app.get("/api/secrets")
+    def list_secrets(context: AuthContext = Depends(auth)) -> list[dict[str, str]]:
+        with store.connection() as connection:
+            rows = connection.execute("SELECT id, ciphertext, created_at, updated_at FROM secrets WHERE owner_id=? ORDER BY updated_at DESC", (context.user_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    @app.post("/api/secrets", status_code=201)
+    def create_secret(payload: EncryptedSecretRequest, context: AuthContext = Depends(auth)) -> dict[str, str]:
+        try:
+            uuid.UUID(payload.id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Secret ID must be a UUID.") from None
+        now = utc_now()
+        with store.connection() as connection:
+            try:
+                connection.execute("INSERT INTO secrets (id, owner_id, ciphertext, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", (payload.id, context.user_id, payload.ciphertext, now, now))
+            except sqlite3.IntegrityError as error:
+                raise HTTPException(status_code=409, detail="Secret ID already exists.") from error
+        return {"id": payload.id, "created_at": now, "updated_at": now}
+
+    @app.get("/api/secrets/{secret_id}")
+    def get_secret(secret_id: str, context: AuthContext = Depends(auth)) -> dict[str, str]:
+        with store.connection() as connection:
+            row = owned_secret(connection, secret_id, context.user_id)
+        return dict(row)
+
+    @app.put("/api/secrets/{secret_id}")
+    def update_secret(secret_id: str, payload: EncryptedSecretUpdateRequest, context: AuthContext = Depends(auth)) -> dict[str, str]:
+        now = utc_now()
+        with store.connection() as connection:
+            owned_secret(connection, secret_id, context.user_id)
+            connection.execute("UPDATE secrets SET ciphertext=?, updated_at=? WHERE id=? AND owner_id=?", (payload.ciphertext, now, secret_id, context.user_id))
+        return {"id": secret_id, "updated_at": now}
+
+    @app.delete("/api/secrets/{secret_id}", status_code=204)
+    def delete_secret(secret_id: str, context: AuthContext = Depends(auth)) -> Response:
+        with store.connection() as connection:
+            owned_secret(connection, secret_id, context.user_id)
+            connection.execute("DELETE FROM secrets WHERE id=? AND owner_id=?", (secret_id, context.user_id))
         return Response(status_code=204)
 
     @app.get("/api/files")
