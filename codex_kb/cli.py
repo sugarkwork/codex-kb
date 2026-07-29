@@ -6,6 +6,8 @@ import argparse
 import getpass
 import json
 import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Sequence
@@ -127,6 +129,20 @@ def build_parser() -> argparse.ArgumentParser:
     remote_import = remote_subparsers.add_parser("import-local", help="Encrypt and copy local knowledge to the remote account; safe to rerun.")
     remote_import.add_argument("--source-home", type=Path, help="Local codex-kb home to import; defaults to --home or ~/.codex-kb.")
     remote_import.add_argument("--dry-run", action="store_true", help="Report the migration plan without uploading records.")
+    remote_secret = remote_subparsers.add_parser("secret", help="Store or use an E2E-encrypted API key without placing its value in knowledge records.")
+    remote_secret_subparsers = remote_secret.add_subparsers(dest="remote_secret_command", required=True)
+    remote_secret_list = remote_secret_subparsers.add_parser("list", help="List secret names and timestamps; never prints values.")
+    remote_secret_set = remote_secret_subparsers.add_parser("set", help="Create or replace a secret. Reads the value from a prompt, stdin, or a named environment variable.")
+    remote_secret_set.add_argument("name", help="Uppercase environment-variable name, such as OPENAI_API_KEY.")
+    value_source = remote_secret_set.add_mutually_exclusive_group()
+    value_source.add_argument("--value-env", metavar="NAME", help="Read the secret value from environment variable NAME. Never use a command-line value.")
+    value_source.add_argument("--value-stdin", action="store_true", help="Read the full UTF-8 secret value from standard input.")
+    remote_secret_delete = remote_secret_subparsers.add_parser("delete", help="Delete a secret by name.")
+    remote_secret_delete.add_argument("name")
+    remote_secret_run = remote_secret_subparsers.add_parser("run", help="Inject one secret into one child process only; the value is not printed or persisted locally.")
+    remote_secret_run.add_argument("name")
+    remote_secret_run.add_argument("--env-var", help="Child-process environment variable name; defaults to the secret name.")
+    remote_secret_run.add_argument("child_command", nargs=argparse.REMAINDER, help="Command to run after --, for example: -- python script.py")
     remote_file = remote_subparsers.add_parser("file", help="Upload, share, download, or remove end-to-end encrypted files.")
     remote_file_subparsers = remote_file.add_subparsers(dest="remote_file_command", required=True)
     remote_file_subparsers.add_parser("list", help="List files you own or that were shared with you.")
@@ -327,6 +343,22 @@ def _remote(args: argparse.Namespace) -> int:
         return 0
     elif args.remote_command == "import-local":
         return _import_local_knowledge(_encrypted_remote(client, credentials), args)
+    elif args.remote_command == "secret":
+        encrypted = _encrypted_remote(client, credentials)
+        if args.remote_secret_command == "list":
+            result = encrypted.list_secrets()
+        elif args.remote_secret_command == "set":
+            result = encrypted.set_secret(args.name, _secret_value_from_args(args))
+            print(f"Stored remote secret {result['name']}.")
+            return 0
+        elif args.remote_secret_command == "delete":
+            encrypted.delete_secret(args.name)
+            print(f"Deleted remote secret {args.name}.")
+            return 0
+        elif args.remote_secret_command == "run":
+            return _run_with_secret(encrypted, args)
+        else:
+            raise ValueError(f"unknown remote secret command: {args.remote_secret_command}")
     elif args.remote_command == "file":
         encrypted = _encrypted_remote(client, credentials)
         if args.remote_file_command == "list":
@@ -448,6 +480,42 @@ def _secret_from_environment(name: str, label: str) -> str:
     if not value:
         raise ValueError(f"environment variable {name!r} does not contain an {label}")
     return value
+
+
+def _secret_value_from_args(args: argparse.Namespace) -> str:
+    if args.value_env:
+        return _secret_from_environment(args.value_env, "secret value")
+    if args.value_stdin:
+        raw = sys.stdin.buffer.read()
+        if b"\x00" in raw:
+            raise ValueError("secret stdin must be UTF-8 text without NUL bytes")
+        try:
+            value = raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("secret stdin must be UTF-8 text") from error
+        return value.rstrip("\r\n")
+    return _prompt_secret("Secret value")
+
+
+def _run_with_secret(remote: EncryptedKnowledgeClient, args: argparse.Namespace) -> int:
+    if not args.child_command:
+        raise ValueError("secret run requires a child command after --")
+    command = list(args.child_command)
+    if command[0] == "--":
+        command.pop(0)
+    if not command:
+        raise ValueError("secret run requires a child command after --")
+    env_var = args.env_var or args.name
+    if not re.fullmatch(r"[A-Z_][A-Z0-9_]{0,127}", env_var):
+        raise ValueError("--env-var must be an uppercase environment-variable name (A-Z, 0-9, _)")
+    secret_value = remote.secret_value(args.name)
+    environment = os.environ.copy()
+    environment[env_var] = secret_value
+    try:
+        return subprocess.run(command, env=environment, check=False).returncode
+    finally:
+        environment[env_var] = ""
+        environment.pop(env_var, None)
 
 
 def _read_json_stdin() -> dict[str, Any]:

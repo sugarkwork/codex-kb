@@ -24,6 +24,7 @@ from .db import KnowledgeInput
 
 DEFAULT_REMOTE_URL = "https://kb.sugar-knight.com"
 KNOWLEDGE_AAD = b"codex-kb knowledge v1"
+SECRET_AAD_PREFIX = "codex-kb secret v1 "
 
 
 class RemoteKnowledgeClient:
@@ -209,6 +210,43 @@ class EncryptedKnowledgeClient:
     def delete_knowledge(self, knowledge_id: str) -> None:
         self.api.delete(f"/api/knowledge/{knowledge_id}")
 
+    def list_secrets(self) -> list[dict[str, str]]:
+        """Return secret metadata only. Secret values are never printed by the CLI."""
+        results: list[dict[str, str]] = []
+        for row in self.api.get("/api/secrets"):
+            value = self._decrypt_secret(row)
+            results.append({"id": row["id"], "name": value["name"], "created_at": row["created_at"], "updated_at": row["updated_at"]})
+        return sorted(results, key=lambda item: item["name"])
+
+    def set_secret(self, name: str, value: str) -> dict[str, str]:
+        _validate_secret_value(name, value)
+        matching = self._secret_rows_named(name)
+        if len(matching) > 1:
+            raise ValueError(f"more than one remote secret is named {name}; delete the duplicates before updating it")
+        if matching:
+            row, _ = matching[0]
+            result = self.api.put(f"/api/secrets/{row['id']}", {"ciphertext": self._encrypt_secret(row["id"], {"name": name, "value": value})})
+            return {"id": row["id"], "name": name, "updated_at": result["updated_at"]}
+        secret_id = str(uuid.uuid4())
+        result = self.api.post("/api/secrets", {"id": secret_id, "ciphertext": self._encrypt_secret(secret_id, {"name": name, "value": value})})
+        return {"id": result["id"], "name": name, "created_at": result["created_at"], "updated_at": result["updated_at"]}
+
+    def secret_value(self, name: str) -> str:
+        matches = self._secret_rows_named(name)
+        if not matches:
+            raise ValueError(f"remote secret {name} was not found")
+        if len(matches) > 1:
+            raise ValueError(f"more than one remote secret is named {name}; delete the duplicates before using it")
+        return matches[0][1]["value"]
+
+    def delete_secret(self, name: str) -> None:
+        matching = self._secret_rows_named(name)
+        if not matching:
+            raise ValueError(f"remote secret {name} was not found")
+        if len(matching) > 1:
+            raise ValueError(f"more than one remote secret is named {name}; delete the duplicates before deleting it")
+        self.api.delete(f"/api/secrets/{matching[0][0]['id']}")
+
     def list_files(self) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
         for item in self.api.get("/api/files"):
@@ -290,6 +328,24 @@ class EncryptedKnowledgeClient:
             raise ValueError("decrypted knowledge record is not an object")
         return {**value, "id": row["id"], "recorded_at": row.get("created_at", ""), "updated_at": row.get("updated_at", "")}
 
+    def _encrypt_secret(self, secret_id: str, value: dict[str, str]) -> str:
+        return e2e.encrypt_json(self.vault_key, value, aad=_secret_aad(secret_id))
+
+    def _decrypt_secret(self, row: dict[str, Any]) -> dict[str, str]:
+        value = e2e.decrypt_json(self.vault_key, row["ciphertext"], aad=_secret_aad(row["id"]))
+        if not isinstance(value, dict) or not isinstance(value.get("name"), str) or not isinstance(value.get("value"), str):
+            raise ValueError("decrypted secret is invalid")
+        _validate_secret_value(value["name"], value["value"])
+        return {"name": value["name"], "value": value["value"]}
+
+    def _secret_rows_named(self, name: str) -> list[tuple[dict[str, Any], dict[str, str]]]:
+        matches: list[tuple[dict[str, Any], dict[str, str]]] = []
+        for row in self.api.get("/api/secrets"):
+            value = self._decrypt_secret(row)
+            if value["name"] == name:
+                matches.append((row, value))
+        return matches
+
     def _get_file_row(self, file_id: str) -> dict[str, Any]:
         for row in self.api.get("/api/files"):
             if row["id"] == file_id:
@@ -311,6 +367,17 @@ class EncryptedKnowledgeClient:
 
 def _file_metadata_aad(file_id: str) -> bytes:
     return f"codex-kb file metadata {file_id}".encode("utf-8")
+
+
+def _secret_aad(secret_id: str) -> bytes:
+    return f"{SECRET_AAD_PREFIX}{secret_id}".encode("utf-8")
+
+
+def _validate_secret_value(name: str, value: str) -> None:
+    if not name or len(name) > 128 or any(not (character.isupper() or character.isdigit() or character == "_") for character in name) or not (name[0].isupper() or name[0] == "_"):
+        raise ValueError("secret names must be uppercase environment-variable names (A-Z, 0-9, _, max 128 characters)")
+    if not value or len(value.encode("utf-8")) > 64 * 1024:
+        raise ValueError("secret values must be non-empty UTF-8 text of at most 64 KiB")
 
 
 def _http_error(status_code: int, body: bytes) -> str:

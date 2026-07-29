@@ -128,10 +128,12 @@ non-trivial work and record reusable outcomes after completion.
 
 ## Safety and retention
 
-Never use this database for secrets. Do not record `.env` contents, API keys,
-tokens, passwords, private keys, customer data, or full raw transcripts. The
-database is local but unencrypted SQLite; back it up or synchronize it only
-through storage you trust.
+Never use the local knowledge database for secrets. Do not record `.env`
+contents, API keys, tokens, passwords, private keys, customer data, or full
+raw transcripts through `record`, `update`, the MCP, or files. The database is
+local but unencrypted SQLite; back it up or synchronize it only through storage
+you trust. The narrowly-scoped remote `secret` command described below is the
+only supported place for API-key values.
 
 ## Test
 
@@ -149,8 +151,8 @@ Registration does not need an invitation code. The command prompts for an
 account password and a separate encryption passphrase, then saves only this
 PC's bearer token and E2E key material to
 `~/.codex-kb/remote-credentials.json`. The password and passphrase are never
-saved. On Windows the credential file is ACL-restricted to the current user;
-on Unix it is mode `0600`.
+saved. On Windows the credential file is protected with current-user DPAPI as
+well as ACL-restricted to the current user; on Unix it is mode `0600`.
 
 ```powershell
 # First PC: creates the account and the default profile credential file.
@@ -194,6 +196,44 @@ after the authenticated client downloads and decrypts the user's records.
 Files are encrypted before upload, including their filename and checksum.
 Sharing a file encrypts its random file key for the selected user's X25519
 public key, so only that user's authenticated clients can decrypt it.
+
+### Remote API-key vault
+
+`remote secret` is deliberately separate from knowledge and files. A secret's
+name and value are AES-256-GCM encrypted on the client using the same E2E vault
+key; the service receives only its UUID, ciphertext, and timestamps. Secret
+listing decrypts locally and prints names/timestamps only. There is no `get`
+command that prints a value.
+
+On the first PC, import an existing API key from a transient environment
+variable or a hidden prompt. Do not put the value in a command argument,
+`.env`, Git, a PowerShell script, or a knowledge record.
+
+```powershell
+# Set this only in a trusted, temporary PowerShell session.
+$env:CODEX_KB_TEMP_SECRET = '<API key entered outside command history>'
+try {
+  codex-kb remote secret set OPENAI_API_KEY --value-env CODEX_KB_TEMP_SECRET
+  codex-kb remote secret list
+} finally {
+  Remove-Item Env:CODEX_KB_TEMP_SECRET -ErrorAction SilentlyContinue
+}
+```
+
+On another authenticated PC, inject the value into exactly one trusted child
+process. The value is not printed, not written to a local file, and is removed
+from the `codex-kb` child environment when that process exits.
+
+```powershell
+codex-kb remote secret run OPENAI_API_KEY --env-var OPENAI_API_KEY -- python .\use-api.py
+```
+
+The child process can use and leak the API key, so run only reviewed commands
+and treat the Codex session that requested the injection as part of the trust
+boundary. Prefer separate API keys per PC with minimal scope, limits, and
+rotation where the provider supports them. `remote secret delete` removes the
+remote copy, but cannot erase a value already received by an authorised PC or
+process.
 
 ```powershell
 codex-kb remote file list

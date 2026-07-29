@@ -70,6 +70,36 @@ class SharedWebServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(e2e.decrypt_json(alice["vault_key"], stored["ciphertext"], aad=b"codex-kb knowledge v1"), body)
         self.assertNotIn(body["title"].encode("utf-8"), (self.data_dir / "kb-service.sqlite3").read_bytes())
 
+    async def test_secret_is_opaque_and_owner_scoped(self) -> None:
+        alice = await self.register(self.alice, "alice")
+        bob = await self.register(self.bob, "bob")
+        secret_id = str(uuid.uuid4())
+        value = {"name": "OPENAI_API_KEY", "value": "test-secret-value-that-must-not-reach-the-server"}
+        ciphertext = e2e.encrypt_json(alice["vault_key"], value, aad=f"codex-kb secret v1 {secret_id}".encode())
+
+        created = await self.alice.post("/api/secrets", headers=self.auth(alice), json={"id": secret_id, "ciphertext": ciphertext})
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertNotIn(value["value"], ciphertext)
+
+        bob_list = await self.bob.get("/api/secrets", headers=self.auth(bob))
+        self.assertEqual(bob_list.status_code, 200)
+        self.assertEqual(bob_list.json(), [])
+        bob_read = await self.bob.get(f"/api/secrets/{secret_id}", headers=self.auth(bob))
+        self.assertEqual(bob_read.status_code, 404)
+
+        listed = await self.alice.get("/api/secrets", headers=self.auth(alice))
+        self.assertEqual(listed.status_code, 200)
+        stored = listed.json()[0]
+        self.assertEqual(e2e.decrypt_json(alice["vault_key"], stored["ciphertext"], aad=f"codex-kb secret v1 {secret_id}".encode()), value)
+        self.assertNotIn(value["value"].encode("utf-8"), (self.data_dir / "kb-service.sqlite3").read_bytes())
+
+        updated_value = {"name": "OPENAI_API_KEY", "value": "rotated-test-secret-value"}
+        updated_ciphertext = e2e.encrypt_json(alice["vault_key"], updated_value, aad=f"codex-kb secret v1 {secret_id}".encode())
+        updated = await self.alice.put(f"/api/secrets/{secret_id}", headers=self.auth(alice), json={"ciphertext": updated_ciphertext})
+        self.assertEqual(updated.status_code, 200, updated.text)
+        removed = await self.alice.delete(f"/api/secrets/{secret_id}", headers=self.auth(alice))
+        self.assertEqual(removed.status_code, 204, removed.text)
+
     async def test_file_is_opaque_and_requires_a_client_key_share(self) -> None:
         alice = await self.register(self.alice, "alice")
         bob = await self.register(self.bob, "bob")

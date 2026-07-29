@@ -36,29 +36,25 @@ Gitを使えない場合は、GitHubの **Code → Download ZIP** で取得・�
 
 ## Codexが実行する一括セットアップ
 
-別PCのCodexには、この手順URL、アカウント名、アカウントパスワード、暗号化
-パスフレーズを渡します。Codexはまずこのブランチをcloneし、次のスクリプトを
-実行します。スクリプトは導入、端末固有ログイン、`whoami`／`list` 検証まで行います。
+別PCのCodexには、まずこの手順URLとアカウント名だけを渡します。Codexはまずこの
+ブランチをcloneし、導入までを実行します。アカウントパスワードと暗号化パスフレーズは、
+可能なら本人が新PCのPowerShellへ直接入力します。Bearerトークン、
+`remote-credentials.json`、APIキーをチャットへ貼り付けません。
 
 ```powershell
 $source = Join-Path $HOME 'source\codex-kb'
 $branch = 'agent/remote-setup-manual'
 git clone --depth 1 --branch $branch https://github.com/sugarkwork/codex-kb.git $source
 
-# 2つの値は、信頼できるCodex実行セッションでだけ設定する。
-$env:CODEX_KB_ACCOUNT_PASSWORD = '<secret supplied in the trusted session>'
-$env:CODEX_KB_ENCRYPTION_PASSPHRASE = '<secret supplied in the trusted session>'
-
-& "$source\scripts\setup-remote.ps1" `
-  -AccountUsername <account-name> `
-  -InstallDirectory $source `
-  -UseExistingCheckout `
-  -Branch $branch
+Set-ExecutionPolicy -Scope Process Bypass
+.\install.ps1
+codex-kb remote login --username <account-name>
+codex-kb remote whoami
+codex-kb remote list
 ```
 
-スクリプトは成功・失敗にかかわらず、上記2つの環境変数を実行中のPowerShell
-プロセスから削除します。Bearerトークン、`remote-credentials.json`、秘密を含む
-PowerShellスクリプトを別PCへ渡す必要はありません。
+本人がプロンプトに入力できない特別な場合だけ、`scripts/setup-remote.ps1` に一時環境
+変数を渡す方式を使えます。値はコマンド引数、Git、`.ps1`、永続環境変数へ書きません。
 
 ## 推奨: 本人が対話入力してログイン
 
@@ -81,8 +77,13 @@ Codexへ渡すのは次だけです。
 
 ```text
 Repository: https://github.com/sugarkwork/codex-kb.git
+Branch: agent/remote-setup-manual
 Account username: <account-name>
-Task: install codex-kb, run remote login, then verify remote whoami and remote list.
+Task: install codex-kb from the stated branch. Stop at `codex-kb remote login`
+so I can type the account password and encryption passphrase directly in the
+new PC's PowerShell. Then run `remote whoami`, `remote list`, and `remote secret list`.
+Never ask me to paste bearer tokens, remote-credentials.json, API keys, or a
+secret value into chat, Git, a command argument, or a script.
 ```
 
 パスワードと暗号化パスフレーズは、可能ならCodexのプロンプトではなく、起動済みの
@@ -108,11 +109,46 @@ try {
 この方式でも、秘密を受け取ったCodexの会話・実行ログの扱いはそのCodex環境の信頼境界に
 従います。信頼できないエージェント、共有ログ、Issue、PR、Git履歴には渡しません。
 
+## APIキーを別PCのCodexで使う
+
+APIキーをナレッジ、ファイル、`.env`、Git、Codexへのチャットには入れません。最初のPCで
+一度だけ、秘密専用のリモート領域へ登録します。値はコマンド引数に渡さず、隠し入力または
+一時環境変数を使います。
+
+```powershell
+# 対話入力。値は画面に表示されない。
+codex-kb remote secret set OPENAI_API_KEY
+
+# 値を表示せず、名前だけ確認する。
+codex-kb remote secret list
+```
+
+別PCが同じアカウントで `remote login` 済みなら、Codexへ渡すのは秘密の**名前**と、
+必要なコマンドだけです。
+
+```text
+The other PC is authenticated with my codex-kb account. Use the remote secret
+named OPENAI_API_KEY only through `codex-kb remote secret run`; do not print,
+export permanently, store, or ask me for the value. Run only the command I
+approve, with OPENAI_API_KEY injected into that one child process.
+```
+
+例えば、本人が内容を確認したスクリプトへだけ一時注入します。
+
+```powershell
+codex-kb remote secret run OPENAI_API_KEY --env-var OPENAI_API_KEY -- python .\use-api.py
+```
+
+`secret run` の子プロセスは値を利用できるため、未確認のコード、共有ログ、外部へ送信する
+コマンドには使いません。API提供元がPC別キー・OAuth・短期トークンを発行できるなら、共有
+静的キーよりそちらを優先し、端末紛失時には該当キーを失効・ローテーションします。
+
 ## 動作確認
 
 ```powershell
 codex-kb remote whoami
 codex-kb remote list
+codex-kb remote secret list
 ```
 
 `whoami` でアカウント名が返り、`list` が復号済みナレッジを表示すれば成功です。
@@ -138,4 +174,4 @@ codex-kb remote import-local
 
 - `remote login` が失敗する: アカウント名、アカウントパスワード、暗号化パスフレーズを確認します。
 - 復号に失敗する: 暗号化パスフレーズが異なる可能性があります。Bearerトークンだけでは解決しません。
-- PCを失った: 別PCから `remote logout` して、そのPCのトークンを失効します。パスフレーズと全資格情報を失うと復旧できません。
+- PCを失った: 別PCから `remote logout` して、そのPCのトークンを失効します。API提供元でも、そのPC用キーを失効・ローテーションします。パスフレーズと全資格情報を失うと復旧できません。
